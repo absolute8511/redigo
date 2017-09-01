@@ -275,6 +275,13 @@ func NewConn(netConn net.Conn, readTimeout, writeTimeout time.Duration) Conn {
 	}
 }
 
+func (c *conn) RemoteAddr() string {
+	if c.conn != nil {
+		c.conn.RemoteAddr().String()
+	}
+	return ""
+}
+
 func (c *conn) Close() error {
 	c.mu.Lock()
 	err := c.err

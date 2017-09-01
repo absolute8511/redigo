@@ -204,6 +204,13 @@ type queuePooledConnection struct {
 	idleDeadline time.Time
 }
 
+func (pc *queuePooledConnection) RemoteAddr() string {
+	if pc.c != nil {
+		pc.c.RemoteAddr()
+	}
+	return ""
+}
+
 func (pc *queuePooledConnection) IsConnected() bool {
 	if pc.c == nil {
 		return false
