@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/absolute8511/redigo/redis"
 )
 
 var (
