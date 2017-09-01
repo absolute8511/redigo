@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/absolute8511/redigo/redis"
 )
 
 type poolTestConn struct {
@@ -633,9 +633,9 @@ func TestLocking_TestOnBorrowFails_PoolDoesntCrash(t *testing.T) {
 	}
 }
 
-func BenchmarkPoolGet(b *testing.B) {
+func BenchmarkPoolGetWithLowIdle(b *testing.B) {
 	b.StopTimer()
-	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 2}
+	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 2, MaxActive: 100}
 	c := p.Get()
 	if err := c.Err(); err != nil {
 		b.Fatal(err)
@@ -643,15 +643,51 @@ func BenchmarkPoolGet(b *testing.B) {
 	c.Close()
 	defer p.Close()
 	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		c = p.Get()
-		c.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for i := 0; i < b.N; i++ {
+				c := p.Get()
+				c.Close()
+			}
+		}()
 	}
+	wg.Wait()
+}
+
+func BenchmarkPoolGet(b *testing.B) {
+	b.StopTimer()
+	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 100, MaxActive: 100}
+	c := p.Get()
+	if err := c.Err(); err != nil {
+		b.Fatal(err)
+	}
+	c.Close()
+	defer p.Close()
+	b.StartTimer()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for i := 0; i < b.N; i++ {
+				c := p.Get()
+				c.Close()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func BenchmarkPoolGetErr(b *testing.B) {
 	b.StopTimer()
-	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 2}
+	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 1}
 	c := p.Get()
 	if err := c.Err(); err != nil {
 		b.Fatal(err)
@@ -670,7 +706,7 @@ func BenchmarkPoolGetErr(b *testing.B) {
 
 func BenchmarkPoolGetPing(b *testing.B) {
 	b.StopTimer()
-	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 2}
+	p := redis.Pool{Dial: redis.DialDefaultServer, MaxIdle: 1}
 	c := p.Get()
 	if err := c.Err(); err != nil {
 		b.Fatal(err)
