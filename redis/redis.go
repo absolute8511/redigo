@@ -21,7 +21,7 @@ func (err Error) Error() string { return string(err) }
 
 // Conn represents a connection to a Redis server.
 type Conn interface {
-	RemoteAddr() string
+	RemoteAddrStr() string
 	// Close closes the connection.
 	Close() error
 

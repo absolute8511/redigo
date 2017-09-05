@@ -204,9 +204,9 @@ type queuePooledConnection struct {
 	idleDeadline time.Time
 }
 
-func (pc *queuePooledConnection) RemoteAddr() string {
+func (pc *queuePooledConnection) RemoteAddrStr() string {
 	if pc.c != nil {
-		pc.c.RemoteAddr()
+		return pc.c.RemoteAddrStr()
 	}
 	return ""
 }

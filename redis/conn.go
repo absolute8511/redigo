@@ -275,9 +275,9 @@ func NewConn(netConn net.Conn, readTimeout, writeTimeout time.Duration) Conn {
 	}
 }
 
-func (c *conn) RemoteAddr() string {
+func (c *conn) RemoteAddrStr() string {
 	if c.conn != nil {
-		c.conn.RemoteAddr().String()
+		return c.conn.RemoteAddr().String()
 	}
 	return ""
 }

@@ -106,6 +106,9 @@ func TestQPoolReuse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if c1.RemoteAddrStr()[:10] != "127.0.0.1:" {
+			t.Fatalf("remote is unexpected: %v", c1.RemoteAddrStr())
+		}
 		c1.Do("PING")
 		c2, _ := p.Get(0)
 		c2.Do("PING")
