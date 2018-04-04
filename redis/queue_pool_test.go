@@ -465,7 +465,7 @@ func BenchmarkQPoolGetWithLowIdle(b *testing.B) {
 			time.Sleep(time.Second * 3)
 		}
 	}()
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

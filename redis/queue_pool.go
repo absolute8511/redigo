@@ -81,6 +81,7 @@ func (p *QueuePool) Get(timeout time.Duration) (Conn, error) {
 CL:
 	// try to acquire a connection; if the connection pool is empty, retry until
 	// timeout occures. If no timeout is set, will retry indefinitely.
+	// TODO: use pid for hint to reduce contention
 	conn, err = p.getConnectionWithHint(0)
 	if err != nil {
 		//log.Printf("get conn failed: %v", err)
@@ -98,7 +99,7 @@ CL:
 // getConnectionWithHint gets a connection to the node.
 // If no pooled connection is available, a new connection will be created.
 // This method does not include logic to retry in case the connection pool is empty
-func (p *QueuePool) getConnectionWithHint(hint byte) (Conn, error) {
+func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 	// try to get a valid connection from the connection pool
 	var err error
 	var conn *queuePooledConnection
@@ -143,7 +144,7 @@ func (p *QueuePool) getConnectionWithHint(hint byte) (Conn, error) {
 // PutConnection puts back a connection to the pool.
 // If connection pool is full, the connection will be
 // closed and discarded.
-func (p *QueuePool) putConnectionWithHint(conn Conn, hint byte) {
+func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 	pc, ok := conn.(*queuePooledConnection)
 	if !ok {
 		log.Printf("pool conn type invalid: %v", conn)
@@ -159,6 +160,7 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint byte) {
 // If connection pool is full, the connection will be
 // closed and discarded.
 func (p *QueuePool) PutConnection(conn Conn) {
+	// TODO: use pid for hint to reduce contention
 	p.putConnectionWithHint(conn, 0)
 }
 

@@ -120,8 +120,8 @@ func newConnectionQueue(size int) *connectionQueue {
 // Offer adds an item to the queue unless the queue is full.
 // In case the queue is full, the item will not be added to the queue
 // and false will be returned
-func (q *connectionQueue) Offer(conn *queuePooledConnection, hint byte) bool {
-	idx := int(hint) % len(q.queues)
+func (q *connectionQueue) Offer(conn *queuePooledConnection, hint int) bool {
+	idx := hint % len(q.queues)
 	end := idx + len(q.queues)
 	for i := idx; i < end; i++ {
 		if success := q.queues[i%len(q.queues)].Offer(conn); success {
@@ -133,10 +133,10 @@ func (q *connectionQueue) Offer(conn *queuePooledConnection, hint byte) bool {
 
 // Poll removes and returns an item from the queue.
 // If the queue is empty, nil will be returned.
-func (q *connectionQueue) Poll(hint byte) (res *queuePooledConnection) {
+func (q *connectionQueue) Poll(hint int) (res *queuePooledConnection) {
 	// fmt.Println(int(hint) % len(q.queues))
 
-	idx := int(hint)
+	idx := hint
 
 	end := idx + len(q.queues)
 	for i := idx; i < end; i++ {
