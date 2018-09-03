@@ -44,7 +44,7 @@ type QueuePool struct {
 
 	// Maximum number of connections allocated by the pool at a given time.
 	// When zero, there is no limit on the number of connections in the pool.
-	MaxActive int
+	MaxActive int32
 
 	// Close connections after remaining idle for this duration. If the value
 	// is zero, then idle connections are not closed. Applications should set
@@ -60,7 +60,7 @@ type QueuePool struct {
 //
 // Deprecated: Initialize the Pool directory as shown in the example.
 func NewQueuePool(newFn func() (Conn, error), maxIdle int, maxActive int) *QueuePool {
-	return &QueuePool{Dial: newFn, MaxIdle: maxIdle, MaxActive: maxActive, pool: newConnectionQueue(maxActive)}
+	return &QueuePool{Dial: newFn, MaxIdle: maxIdle, MaxActive: int32(maxActive), pool: newConnectionQueue(maxActive)}
 }
 
 func (p *QueuePool) IsActive() bool {
@@ -122,7 +122,7 @@ func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 	if conn == nil {
 		cc := atomic.AddInt32(&p.connCnt, 1)
 		// if connection count is limited and enough connections are already created, don't create a new one
-		if cc > int32(p.MaxActive) {
+		if cc > atomic.LoadInt32(&p.MaxActive) {
 			atomic.AddInt32(&p.connCnt, -1)
 			return nil, ErrPoolExhausted
 		}
@@ -162,6 +162,10 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 func (p *QueuePool) PutConnection(conn Conn) {
 	// TODO: use pid for hint to reduce contention
 	p.putConnectionWithHint(conn, 0)
+}
+
+func (p *QueuePool) SetMaxActive(c int32) {
+	atomic.StoreInt32(&p.MaxActive, c)
 }
 
 func (p *QueuePool) Count() int {
