@@ -67,7 +67,7 @@ func (p *QueuePool) IsActive() bool {
 	return atomic.LoadInt32(&p.closed) == 0
 }
 
-func (p *QueuePool) Get(timeout time.Duration) (Conn, error) {
+func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
 	var conn Conn
 	var err error
 	if !p.IsActive() {
@@ -82,7 +82,7 @@ CL:
 	// try to acquire a connection; if the connection pool is empty, retry until
 	// timeout occures. If no timeout is set, will retry indefinitely.
 	// TODO: use pid for hint to reduce contention
-	conn, err = p.getConnectionWithHint(0)
+	conn, err = p.getConnectionWithHint(hint)
 	if err != nil {
 		//log.Printf("get conn failed: %v", err)
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
@@ -132,7 +132,7 @@ func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 			atomic.AddInt32(&p.connCnt, -1)
 			return nil, err
 		}
-		conn = &queuePooledConnection{c: c, p: p}
+		conn = &queuePooledConnection{c: c, p: p, hint: hint}
 	}
 
 	conn.SetIdleTimeout(p.IdleTimeout)
@@ -159,9 +159,9 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 // PutConnection puts back a connection to the pool.
 // If connection pool is full, the connection will be
 // closed and discarded.
-func (p *QueuePool) PutConnection(conn Conn) {
+func (p *QueuePool) PutConnection(conn Conn, hint int) {
 	// TODO: use pid for hint to reduce contention
-	p.putConnectionWithHint(conn, 0)
+	p.putConnectionWithHint(conn, hint)
 }
 
 func (p *QueuePool) SetMaxActive(c int32) {
@@ -192,13 +192,13 @@ func (p *QueuePool) Refresh() {
 	p.pool.DropIdle(p.MaxIdle)
 }
 
-func (p *QueuePool) put(c Conn, forceClose bool) error {
+func (p *QueuePool) put(c Conn, forceClose bool, hint int) error {
 	if forceClose || c.Err() != nil || !p.IsActive() {
 		pc := c.(*queuePooledConnection)
 		pc.realClose()
 		return nil
 	}
-	p.PutConnection(c)
+	p.PutConnection(c, hint)
 	return nil
 }
 
@@ -208,6 +208,7 @@ type queuePooledConnection struct {
 	state        int
 	idleTimeout  time.Duration
 	idleDeadline time.Time
+	hint         int
 }
 
 func (pc *queuePooledConnection) RemoteAddrStr() string {
@@ -270,7 +271,7 @@ func (pc *queuePooledConnection) Close() error {
 		}
 	}
 	c.Do("")
-	pc.p.put(pc, pc.state != 0)
+	pc.p.put(pc, pc.state != 0, pc.hint)
 	return nil
 }
 
