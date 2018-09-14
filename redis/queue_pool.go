@@ -87,7 +87,7 @@ CL:
 		//log.Printf("get conn failed: %v", err)
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
 			// give the scheduler time to breath; affects latency minimally, but throughput drastically
-			time.Sleep(time.Microsecond)
+			time.Sleep(time.Microsecond * 10)
 			goto CL
 		}
 
