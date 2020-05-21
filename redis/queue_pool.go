@@ -23,6 +23,10 @@ import (
 	"github.com/absolute8511/redigo/internal"
 )
 
+const (
+	sleepBetweenRetry = time.Microsecond * 500
+)
+
 type QueuePool struct {
 
 	// Dial is an application supplied function for creating and configuring a
@@ -67,7 +71,19 @@ func (p *QueuePool) IsActive() bool {
 	return atomic.LoadInt32(&p.closed) == 0
 }
 
+func (p *QueuePool) GetUntil(timeout time.Duration, hint int) (Conn, error) {
+	if timeout == 0 {
+		timeout = time.Second
+	}
+	return p.getWithMaxRetry(timeout, hint, int64(timeout/sleepBetweenRetry))
+}
+
+// Get will only retry 3 times to avoid too much cpu cost
 func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
+	return p.getWithMaxRetry(timeout, hint, 3)
+}
+
+func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry int64) (Conn, error) {
 	var conn Conn
 	var err error
 	if !p.IsActive() {
@@ -77,8 +93,10 @@ func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
 	if timeout == 0 {
 		deadline = time.Now().Add(time.Second)
 	}
+	retry := 0
 
 CL:
+	retry++
 	// try to acquire a connection; if the connection pool is empty, retry until
 	// timeout occures. If no timeout is set, will retry indefinitely.
 	// TODO: use pid for hint to reduce contention
@@ -86,8 +104,13 @@ CL:
 	if err != nil {
 		//log.Printf("get conn failed: %v", err)
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
+			if int64(retry) >= maxRetry {
+				// avoid too much retry while pool exhausted (it will cost too much cpu)
+				// TODO; maybe use sync.Cond
+				return nil, err
+			}
 			// give the scheduler time to breath; affects latency minimally, but throughput drastically
-			time.Sleep(time.Microsecond * 200)
+			time.Sleep(sleepBetweenRetry)
 			goto CL
 		}
 

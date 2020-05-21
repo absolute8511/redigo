@@ -102,7 +102,7 @@ func TestQPoolReuse(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 2, 10)
 
 	for i := 0; i < 10; i++ {
-		c1, err := p.Get(0)
+		c1, err := p.Get(0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestQPoolReuse(t *testing.T) {
 			t.Fatalf("remote is unexpected: %v", c1.RemoteAddrStr())
 		}
 		c1.Do("PING")
-		c2, _ := p.Get(0)
+		c2, _ := p.Get(0, 0)
 		c2.Do("PING")
 		c1.Close()
 		c2.Close()
@@ -129,11 +129,11 @@ func TestQPoolMaxIdle(t *testing.T) {
 	defer p.Close()
 
 	for i := 0; i < 10; i++ {
-		c1, _ := p.Get(0)
+		c1, _ := p.Get(0, 0)
 		c1.Do("PING")
-		c2, _ := p.Get(0)
+		c2, _ := p.Get(0, 0)
 		c2.Do("PING")
-		c3, _ := p.Get(0)
+		c3, _ := p.Get(0, 0)
 		c3.Do("PING")
 		c1.Close()
 		c2.Close()
@@ -151,14 +151,14 @@ func TestQPoolError(t *testing.T) {
 
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.Get(0, 0)
 	c.Do("ERR", io.EOF)
 	if c.Err() == nil {
 		t.Errorf("expected c.Err() != nil")
 	}
 	c.Close()
 
-	c, _ = p.Get(0)
+	c, _ = p.Get(0, 0)
 	c.Do("ERR", io.EOF)
 	c.Close()
 
@@ -171,11 +171,11 @@ func TestQPoolClose(t *testing.T) {
 
 	defer p.Close()
 
-	c1, _ := p.Get(0)
+	c1, _ := p.Get(0, 0)
 	c1.Do("PING")
-	c2, _ := p.Get(0)
+	c2, _ := p.Get(0, 0)
 	c2.Do("PING")
-	c3, _ := p.Get(0)
+	c3, _ := p.Get(0, 0)
 	c3.Do("PING")
 
 	c1.Close()
@@ -185,7 +185,7 @@ func TestQPoolClose(t *testing.T) {
 	p.Close()
 
 	c3.Close()
-	c1, _ = p.Get(0)
+	c1, _ = p.Get(0, 0)
 	if c1 != nil {
 		t.Errorf("expected error after pool closed")
 	}
@@ -198,7 +198,7 @@ func TestQPoolBorrowCheck(t *testing.T) {
 	defer p.Close()
 
 	for i := 0; i < 10; i++ {
-		c, _ := p.Get(0)
+		c, _ := p.Get(0, 0)
 		c.Do("PING")
 		c.Close()
 	}
@@ -217,7 +217,7 @@ func TestQPoolBorrowTime(t *testing.T) {
 	}
 	defer p.Close()
 
-	c1, err := p.Get(0)
+	c1, err := p.Get(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestQPoolBorrowTime(t *testing.T) {
 	d.check("1", p, 1, 1)
 	time.Sleep(time.Second)
 
-	c1, err = p.Get(0)
+	c1, err = p.Get(0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,14 +240,14 @@ func TestQPoolMaxActive(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 2, 2)
 	defer p.Close()
 
-	c1, _ := p.Get(0)
+	c1, _ := p.Get(0, 0)
 	c1.Do("PING")
-	c2, _ := p.Get(0)
+	c2, _ := p.Get(0, 0)
 	c2.Do("PING")
 
 	d.check("1", p, 2, 2)
 
-	c3, err := p.Get(0)
+	c3, err := p.Get(0, 0)
 	if err != redis.ErrPoolExhausted {
 		t.Errorf("expected pool exhausted")
 	}
@@ -256,7 +256,7 @@ func TestQPoolMaxActive(t *testing.T) {
 	c2.Close()
 	d.check("3", p, 2, 2)
 
-	c3, _ = p.Get(0)
+	c3, _ = p.Get(0, 0)
 	if _, err := c3.Do("PING"); err != nil {
 		t.Errorf("expected good channel, err=%v", err)
 	}
@@ -270,16 +270,16 @@ func TestQPoolWaitTimeout(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c1, _ := p.Get(0)
+	c1, _ := p.Get(0, 0)
 	c1.Do("PING")
-	c2, err := p.Get(time.Second)
+	c2, err := p.Get(time.Second, 0)
 	if err != redis.ErrPoolExhausted {
 		t.Errorf("expected pool exhausted")
 	}
 	d.check("1", p, 1, 1)
 	c1.Close()
 
-	c2, err = p.Get(time.Second)
+	c2, err = p.Get(time.Second, 0)
 	if err != nil {
 		t.Errorf("should success get conn")
 	}
@@ -292,7 +292,7 @@ func TestQPoolMonitorCleanup(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 2, 2)
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.Get(0, 0)
 	c.Send("MONITOR")
 	c.Close()
 
@@ -303,7 +303,7 @@ func startQPoolGoroutines(p *redis.QueuePool, cmd string, args ...interface{}) c
 	errs := make(chan error, 10)
 	for i := 0; i < cap(errs); i++ {
 		go func() {
-			c, err := p.Get(time.Second * 2)
+			c, err := p.GetUntil(time.Second*2, 0)
 			if err != nil {
 				errs <- err
 			} else {
@@ -325,7 +325,7 @@ func TestWaitQPool(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.Get(0, 0)
 	errs := startQPoolGoroutines(p, "PING")
 	d.check("before close", p, 1, 1)
 	c.Close()
@@ -334,7 +334,9 @@ func TestWaitQPool(t *testing.T) {
 		select {
 		case err := <-errs:
 			if err != nil {
-				t.Fatal(err)
+				if err != redis.ErrPoolExhausted {
+					t.Fatal(err)
+				}
 			}
 		case <-timeout:
 			t.Fatalf("timeout waiting for blocked goroutine %d", i)
@@ -349,7 +351,7 @@ func TestWaitQPoolClose(t *testing.T) {
 
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.Get(0, 0)
 	if _, err := c.Do("PING"); err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +382,7 @@ func TestWaitQPoolCommandError(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.GetUntil(0, 0)
 	errs := startQPoolGoroutines(p, "ERR", testErr)
 	d.check("before close", p, 1, 1)
 	c.Close()
@@ -404,7 +406,7 @@ func TestWaitQPoolDialError(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c, _ := p.Get(0)
+	c, _ := p.GetUntil(0, 0)
 	errs := startQPoolGoroutines(p, "ERR", testErr)
 	d.check("before close", p, 1, 1)
 
@@ -441,7 +443,7 @@ func TestWaitQPoolDialError(t *testing.T) {
 func BenchmarkQPoolGetWithLowIdle(b *testing.B) {
 	b.StopTimer()
 	p := redis.NewQueuePool(redis.DialDefaultServer, 2, 100)
-	c, err := p.Get(0)
+	c, err := p.Get(0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -470,7 +472,7 @@ func BenchmarkQPoolGetWithLowIdle(b *testing.B) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < b.N; i++ {
-				c, _ := p.Get(0)
+				c, _ := p.Get(0, 0)
 				c.Close()
 			}
 		}()
@@ -482,7 +484,7 @@ func BenchmarkQPoolGetWithLowIdle(b *testing.B) {
 func BenchmarkQPoolGet(b *testing.B) {
 	b.StopTimer()
 	p := redis.NewQueuePool(redis.DialDefaultServer, 100, 100)
-	c, err := p.Get(0)
+	c, err := p.Get(0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -510,7 +512,7 @@ func BenchmarkQPoolGet(b *testing.B) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < b.N; i++ {
-				c, _ := p.Get(0)
+				c, _ := p.Get(0, 0)
 				c.Close()
 			}
 		}()
@@ -522,7 +524,7 @@ func BenchmarkQPoolGet(b *testing.B) {
 func BenchmarkQPoolGetErr(b *testing.B) {
 	b.StopTimer()
 	p := redis.NewQueuePool(redis.DialDefaultServer, 2, 20)
-	c, err := p.Get(0)
+	c, err := p.Get(0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -533,7 +535,7 @@ func BenchmarkQPoolGetErr(b *testing.B) {
 	defer p.Close()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		c, err = p.Get(0)
+		c, err = p.Get(0, 0)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -544,7 +546,7 @@ func BenchmarkQPoolGetErr(b *testing.B) {
 func BenchmarkQPoolGetPing(b *testing.B) {
 	b.StopTimer()
 	p := redis.NewQueuePool(redis.DialDefaultServer, 2, 20)
-	c, err := p.Get(0)
+	c, err := p.Get(0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -552,7 +554,7 @@ func BenchmarkQPoolGetPing(b *testing.B) {
 	defer p.Close()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		c, _ = p.Get(0)
+		c, _ = p.Get(0, 0)
 		if _, err := c.Do("PING"); err != nil {
 			b.Fatal(err)
 		}

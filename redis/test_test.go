@@ -38,7 +38,7 @@ var (
 	ErrNegativeInt = errNegativeInt
 
 	serverPath     = flag.String("redis-server", "redis-server", "Path to redis server binary")
-	serverBasePort = flag.Int("redis-port", 16379, "Beginning of port range for test servers")
+	serverBasePort = flag.Int("redis-port", 16389, "Beginning of port range for test servers")
 	serverLogName  = flag.String("redis-log", "", "Write Redis server logs to `filename`")
 	serverLog      = ioutil.Discard
 
