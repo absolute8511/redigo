@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	sleepBetweenRetry = time.Microsecond * 500
+	sleepBetweenRetry = time.Microsecond * 200
 )
 
 type QueuePool struct {
@@ -55,16 +55,24 @@ type QueuePool struct {
 	// the timeout to a value less than the server's timeout.
 	IdleTimeout time.Duration
 
-	pool    *connectionQueue
-	closed  int32
-	connCnt int32
+	pool       *connectionQueue
+	closed     int32
+	connCnt    int32
+	waitList   chan struct{}
+	waitingCnt int64
 }
 
 // NewPool creates a new pool.
 //
 // Deprecated: Initialize the Pool directory as shown in the example.
 func NewQueuePool(newFn func() (Conn, error), maxIdle int, maxActive int) *QueuePool {
-	return &QueuePool{Dial: newFn, MaxIdle: maxIdle, MaxActive: int32(maxActive), pool: newConnectionQueue(maxActive)}
+	return &QueuePool{
+		Dial:      newFn,
+		MaxIdle:   maxIdle,
+		MaxActive: int32(maxActive),
+		pool:      newConnectionQueue(maxActive),
+		waitList:  make(chan struct{}, maxActive+1),
+	}
 }
 
 func (p *QueuePool) IsActive() bool {
@@ -89,11 +97,13 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 	if !p.IsActive() {
 		return nil, ErrPoolExhausted
 	}
-	deadline := time.Now().Add(timeout)
+	realTo := timeout
 	if timeout == 0 {
-		deadline = time.Now().Add(time.Second)
+		realTo = time.Second
 	}
+	deadline := time.Now().Add(realTo)
 	retry := 0
+	var to *time.Timer
 
 CL:
 	retry++
@@ -107,14 +117,33 @@ CL:
 			if int64(retry) >= maxRetry {
 				// avoid too much retry while pool exhausted (it will cost too much cpu)
 				// TODO; maybe use sync.Cond
+				if to != nil {
+					to.Stop()
+				}
 				return nil, err
 			}
+			if to == nil {
+				to = time.NewTimer(realTo)
+			}
+			atomic.AddInt64(&p.waitingCnt, 1)
+			select {
+			case <-to.C:
+			case <-p.waitList:
+			}
+			atomic.AddInt64(&p.waitingCnt, -1)
+			// since the conn may be grabbed by others in high concurrency, so avoid retry too quickly,
 			// give the scheduler time to breath; affects latency minimally, but throughput drastically
 			time.Sleep(sleepBetweenRetry)
 			goto CL
 		}
 
+		if to != nil {
+			to.Stop()
+		}
 		return nil, err
+	}
+	if to != nil {
+		to.Stop()
 	}
 	return conn, nil
 }
@@ -177,6 +206,14 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 	if !p.IsActive() || !p.pool.Offer(pc, hint) {
 		pc.realClose()
 	}
+	// if returned to pool, we notify waiting to retry get from pool
+	// if closed, we notify waiting client to retry create a new connection to pool
+	if atomic.LoadInt64(&p.waitingCnt) > 0 {
+		select {
+		case p.waitList <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // PutConnection puts back a connection to the pool.
@@ -219,6 +256,13 @@ func (p *QueuePool) put(c Conn, forceClose bool, hint int) error {
 	if forceClose || c.Err() != nil || !p.IsActive() {
 		pc := c.(*queuePooledConnection)
 		pc.realClose()
+		if atomic.LoadInt64(&p.waitingCnt) > 0 {
+			//notify waiting to retry created one in pool
+			select {
+			case p.waitList <- struct{}{}:
+			default:
+			}
+		}
 		return nil
 	}
 	p.PutConnection(c, hint)

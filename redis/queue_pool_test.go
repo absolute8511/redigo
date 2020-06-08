@@ -303,7 +303,7 @@ func startQPoolGoroutines(p *redis.QueuePool, cmd string, args ...interface{}) c
 	errs := make(chan error, 10)
 	for i := 0; i < cap(errs); i++ {
 		go func() {
-			c, err := p.GetUntil(time.Second*2, 0)
+			c, err := p.Get(time.Second*2, 0)
 			if err != nil {
 				errs <- err
 			} else {
@@ -382,7 +382,7 @@ func TestWaitQPoolCommandError(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c, _ := p.GetUntil(0, 0)
+	c, _ := p.Get(0, 0)
 	errs := startQPoolGoroutines(p, "ERR", testErr)
 	d.check("before close", p, 1, 1)
 	c.Close()
@@ -406,7 +406,7 @@ func TestWaitQPoolDialError(t *testing.T) {
 	p := redis.NewQueuePool(d.dial, 1, 1)
 	defer p.Close()
 
-	c, _ := p.GetUntil(0, 0)
+	c, _ := p.Get(0, 0)
 	errs := startQPoolGoroutines(p, "ERR", testErr)
 	d.check("before close", p, 1, 1)
 
