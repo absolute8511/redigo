@@ -415,6 +415,7 @@ func TestWaitQPoolDialError(t *testing.T) {
 
 	nilCount := 0
 	errCount := 0
+	poolEmpty := 0
 	timeout := time.After(2 * time.Second)
 	for i := 0; i < cap(errs); i++ {
 		select {
@@ -424,6 +425,8 @@ func TestWaitQPoolDialError(t *testing.T) {
 				nilCount++
 			case d.dialErr:
 				errCount++
+			case redis.ErrPoolExhausted:
+				poolEmpty++
 			default:
 				t.Fatalf("expected dial error or nil, got %v", err)
 			}
@@ -434,10 +437,10 @@ func TestWaitQPoolDialError(t *testing.T) {
 	if nilCount != 1 {
 		t.Errorf("expected one nil error, got %d", nilCount)
 	}
-	if errCount != cap(errs)-1 {
+	if errCount+poolEmpty != cap(errs)-1 {
 		t.Errorf("expected %d dial errors, got %d", cap(errs)-1, errCount)
 	}
-	d.check("done", p, cap(errs), 0)
+	d.check("done", p, errCount+1, 0)
 }
 
 func BenchmarkQPoolGetWithLowIdle(b *testing.B) {
