@@ -91,7 +91,7 @@ type connectionQueue struct {
 }
 
 func newConnectionQueue(size int) *connectionQueue {
-	queueCount := runtime.NumCPU()
+	queueCount := runtime.NumCPU() / 2
 	if size <= 0 {
 		size = 8
 	}
@@ -100,6 +100,10 @@ func newConnectionQueue(size int) *connectionQueue {
 	}
 	if queueCount <= 0 {
 		queueCount = 1
+	}
+	// avoid too much count which will cause the cpu high while pool is full
+	if queueCount > 4 {
+		queueCount = 4
 	}
 	// will be >= 1
 	perQueueSize := size / queueCount

@@ -104,46 +104,56 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 	deadline := time.Now().Add(realTo)
 	retry := 0
 	var to *time.Timer
+	defer func() {
+		if to != nil {
+			to.Stop()
+		}
+	}()
 
+	firstWait := false
+	if atomic.LoadInt64(&p.waitingCnt) > 1 {
+		// since others is waiting, we need wait next retry
+		firstWait = true
+		err = ErrPoolExhausted
+	}
 CL:
 	retry++
-	// try to acquire a connection; if the connection pool is empty, retry until
-	// timeout occures. If no timeout is set, will retry indefinitely.
-	// TODO: use pid for hint to reduce contention
-	conn, err = p.getConnectionWithHint(hint)
+	if !firstWait {
+		// try to acquire a connection; if the connection pool is empty, retry until
+		// timeout occures. If no timeout is set, will retry indefinitely.
+		// TODO: use pid for hint to reduce contention
+		conn, err = p.getConnectionWithHint(hint)
+	}
+	firstWait = false
 	if err != nil {
 		//log.Printf("get conn failed: %v", err)
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
 			if int64(retry) >= maxRetry {
 				// avoid too much retry while pool exhausted (it will cost too much cpu)
 				// TODO; maybe use sync.Cond
-				if to != nil {
-					to.Stop()
-				}
 				return nil, err
 			}
 			if to == nil {
 				to = time.NewTimer(realTo)
 			}
 			atomic.AddInt64(&p.waitingCnt, 1)
+			timeouted := false
 			select {
 			case <-to.C:
+				timeouted = true
 			case <-p.waitList:
 			}
 			atomic.AddInt64(&p.waitingCnt, -1)
+			if timeouted {
+				return nil, err
+			}
 			// since the conn may be grabbed by others in high concurrency, so avoid retry too quickly,
 			// give the scheduler time to breath; affects latency minimally, but throughput drastically
 			time.Sleep(sleepBetweenRetry)
 			goto CL
 		}
 
-		if to != nil {
-			to.Stop()
-		}
 		return nil, err
-	}
-	if to != nil {
-		to.Stop()
 	}
 	return conn, nil
 }
