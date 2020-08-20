@@ -91,6 +91,11 @@ func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
 	return p.getWithMaxRetry(timeout, hint, 3)
 }
 
+// GetRetry retry get connection in retry count, avoid retry too much
+func (p *QueuePool) GetRetry(timeout time.Duration, hint int, retry int) (Conn, error) {
+	return p.getWithMaxRetry(timeout, hint, int64(retry))
+}
+
 func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry int64) (Conn, error) {
 	var conn Conn
 	var err error
