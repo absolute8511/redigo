@@ -135,13 +135,15 @@ CL:
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
 			if int64(retry) >= maxRetry {
 				// avoid too much retry while pool exhausted (it will cost too much cpu)
-				// TODO; maybe use sync.Cond
 				return nil, err
 			}
 			if to == nil {
 				to = time.NewTimer(realTo)
 			}
 			atomic.AddInt64(&p.waitingCnt, 1)
+			// since the conn may be grabbed by others in high concurrency, so avoid retry too quickly,
+			// give the scheduler time to breath; affects latency minimally, but throughput drastically
+			time.Sleep(sleepBetweenRetry)
 			timeouted := false
 			select {
 			case <-to.C:
@@ -152,9 +154,6 @@ CL:
 			if timeouted {
 				return nil, err
 			}
-			// since the conn may be grabbed by others in high concurrency, so avoid retry too quickly,
-			// give the scheduler time to breath; affects latency minimally, but throughput drastically
-			time.Sleep(sleepBetweenRetry)
 			goto CL
 		}
 
