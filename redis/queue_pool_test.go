@@ -18,6 +18,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,15 +63,20 @@ type qpoolDialer struct {
 	open     int
 	commands []string
 	dialErr  error
+	dialWait int
 }
 
 func (d *qpoolDialer) dial() (redis.Conn, error) {
 	d.mu.Lock()
 	d.dialed += 1
 	dialErr := d.dialErr
+	wait := d.dialWait
 	d.mu.Unlock()
+	if wait > 0 {
+		time.Sleep(time.Second * time.Duration(wait))
+	}
 	if dialErr != nil {
-		return nil, d.dialErr
+		return nil, dialErr
 	}
 	c, err := redis.DialDefaultServer()
 	if err != nil {
@@ -441,6 +447,101 @@ func TestWaitQPoolDialError(t *testing.T) {
 		t.Errorf("expected %d dial errors, got %d", cap(errs)-1, errCount)
 	}
 	d.check("done", p, errCount+1, 0)
+}
+
+func TestWaitQPoolDialTimeoutToomuchShouldNotHangWaiting(t *testing.T) {
+	// test pool dail too long, and many client waiting on get connection since max active
+	// and the dail failed should notify waiting client to retry recreate
+	d := qpoolDialer{t: t, dialWait: 3}
+	p := redis.NewQueuePool(d.dial, 1, 2)
+	defer p.Close()
+
+	d.dialErr = errors.New("dial")
+	d.check("before close", p, 0, 0)
+
+	errCnt := int32(0)
+	errPoolExhaustedCnt := int32(0)
+	successCnt := int32(0)
+	done := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			time.Sleep(time.Millisecond * time.Duration(10*index))
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				conn, err := p.Get(time.Second/10, 0)
+				if err != nil {
+					atomic.AddInt32(&errCnt, 1)
+					if err == redis.ErrPoolExhausted {
+						atomic.AddInt32(&errPoolExhaustedCnt, 1)
+					}
+				} else {
+					conn.Close()
+					atomic.AddInt32(&successCnt, 1)
+					time.Sleep(time.Millisecond)
+				}
+			}
+		}(i)
+	}
+	// Wait for goroutines to block.
+	time.Sleep(time.Second / 4)
+
+	start := time.Now()
+	for {
+		if p.Count() == 0 && p.WaitingCount() > 5 {
+			break
+		}
+		if time.Since(start) > time.Second*10 {
+			break
+		}
+		time.Sleep(time.Second / 2)
+		t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	}
+	t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	if successCnt > 0 {
+		t.Errorf("should not success dial")
+	}
+	// make dial become normal
+	d.mu.Lock()
+	d.dialErr = nil
+	d.dialWait = 0
+	d.mu.Unlock()
+	// should have success for a while
+	start = time.Now()
+	for {
+		if p.WaitingCount() == 0 {
+			break
+		}
+		if time.Since(start) > time.Second*10 {
+			t.Errorf("timeout wait the waiting done")
+			break
+		}
+		time.Sleep(time.Millisecond * 100)
+		t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	}
+	close(done)
+	wg.Wait()
+
+	t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	if p.Count() <= 0 {
+		t.Errorf("should have pooled connections")
+	}
+	if successCnt <= 0 {
+		t.Errorf("should have success get connections")
+	}
+	if errPoolExhaustedCnt <= errCnt/2 {
+		t.Errorf("should have enough exhausted error")
+	}
+	if errCnt-errPoolExhaustedCnt <= 2 {
+		t.Errorf("should have enough non-exhausted error")
+	}
+	d.check("done", p, int(errCnt-errPoolExhaustedCnt+2), 2)
 }
 
 func BenchmarkQPoolGetWithLowIdle(b *testing.B) {

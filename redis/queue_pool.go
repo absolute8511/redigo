@@ -115,8 +115,12 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 		}
 	}()
 
+	wc := atomic.LoadInt64(&p.waitingCnt)
+	if wc > int64(atomic.LoadInt32(&p.MaxActive)*10) {
+		return nil, ErrPoolExhausted
+	}
 	firstWait := false
-	if atomic.LoadInt64(&p.waitingCnt) > 1 {
+	if p.Count() > 0 && (wc > int64(atomic.LoadInt32(&p.MaxActive))) {
 		// since others is waiting, we need wait next retry
 		firstWait = true
 		err = ErrPoolExhausted
@@ -196,6 +200,7 @@ func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 		var c Conn
 		if c, err = p.Dial(); err != nil {
 			atomic.AddInt32(&p.connCnt, -1)
+			p.maybeWakeupWaiting()
 			return nil, err
 		}
 		conn = &queuePooledConnection{c: c, p: p, hint: hint}
@@ -205,6 +210,16 @@ func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 	conn.Refresh()
 
 	return conn, nil
+}
+
+func (p *QueuePool) maybeWakeupWaiting() {
+	if atomic.LoadInt64(&p.waitingCnt) > 0 {
+		//notify waiting to retry created one in pool
+		select {
+		case p.waitList <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // PutConnection puts back a connection to the pool.
@@ -218,15 +233,11 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 	}
 	pc.Refresh()
 	if !p.IsActive() || !p.pool.Offer(pc, hint) {
+		// if closed, we will notify waiting client to retry create a new connection to pool
 		pc.realClose()
-	}
-	// if returned to pool, we notify waiting to retry get from pool
-	// if closed, we notify waiting client to retry create a new connection to pool
-	if atomic.LoadInt64(&p.waitingCnt) > 0 {
-		select {
-		case p.waitList <- struct{}{}:
-		default:
-		}
+	} else {
+		// if returned to pool, we notify waiting to retry get from pool
+		p.maybeWakeupWaiting()
 	}
 }
 
@@ -245,6 +256,11 @@ func (p *QueuePool) SetMaxActive(c int32) {
 func (p *QueuePool) Count() int {
 	active := atomic.LoadInt32(&p.connCnt)
 	return int(active)
+}
+
+func (p *QueuePool) WaitingCount() int {
+	cnt := atomic.LoadInt64(&p.waitingCnt)
+	return int(cnt)
 }
 
 // Close releases the resources used by the pool.
@@ -270,13 +286,6 @@ func (p *QueuePool) put(c Conn, forceClose bool, hint int) error {
 	if forceClose || c.Err() != nil || !p.IsActive() {
 		pc := c.(*queuePooledConnection)
 		pc.realClose()
-		if atomic.LoadInt64(&p.waitingCnt) > 0 {
-			//notify waiting to retry created one in pool
-			select {
-			case p.waitList <- struct{}{}:
-			default:
-			}
-		}
 		return nil
 	}
 	p.PutConnection(c, hint)
@@ -315,6 +324,7 @@ func (pc *queuePooledConnection) realClose() error {
 	}
 	pc.c = errorConnection{errConnClosed}
 	atomic.AddInt32(&pc.p.connCnt, -1)
+	pc.p.maybeWakeupWaiting()
 	return c.Close()
 }
 
