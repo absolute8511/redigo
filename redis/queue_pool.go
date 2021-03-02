@@ -109,21 +109,13 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 	if wc > int64(maxActive*10) {
 		return nil, ErrPoolExhausted
 	}
-	firstWait := false
-	if p.Count() >= int(maxActive-1) && (wc > 0) {
-		// since others is waiting, we need wait next retry
-		firstWait = true
-		err = ErrPoolExhausted
-	}
+
 CL:
 	retry++
-	if !firstWait {
-		// try to acquire a connection; if the connection pool is empty, retry until
-		// timeout occures. If no timeout is set, will retry indefinitely.
-		// TODO: use pid for hint to reduce contention
-		conn, err = p.getConnectionWithHint(hint)
-	}
-	firstWait = false
+	// try to acquire a connection; if the connection pool is empty, retry until
+	// timeout occures. If no timeout is set, will retry indefinitely.
+	// TODO: use pid for hint to reduce contention
+	conn, err = p.getConnectionWithHint(hint)
 	if err != nil {
 		//log.Printf("get conn failed: %v", err)
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {

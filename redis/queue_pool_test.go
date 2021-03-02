@@ -501,9 +501,9 @@ func TestWaitQPoolDialTimeoutToomuchShouldNotHangWaiting(t *testing.T) {
 			break
 		}
 		time.Sleep(time.Second / 2)
-		t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
 	}
-	t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	t.Logf("stats: %v, %v, %v, pool: %v, %v", atomic.LoadInt32(&successCnt), atomic.LoadInt32(&errCnt),
+		atomic.LoadInt32(&errPoolExhaustedCnt), p.Count(), p.WaitingCount())
 	if successCnt > 0 {
 		t.Errorf("should not success dial")
 	}
@@ -523,7 +523,6 @@ func TestWaitQPoolDialTimeoutToomuchShouldNotHangWaiting(t *testing.T) {
 			break
 		}
 		time.Sleep(time.Millisecond * 100)
-		t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
 	}
 	close(done)
 	wg.Wait()
