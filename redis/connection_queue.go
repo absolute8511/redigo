@@ -48,10 +48,10 @@ func newSingleConnectionQueue(size int) *singleConnectionQueue {
 // and false will be returned
 func (q *singleConnectionQueue) Offer(conn *queuePooledConnection) bool {
 	q.mutex.Lock()
+	defer q.mutex.Unlock()
 
 	// make sure queue is not full
 	if q.tail == q.head && q.wrapped {
-		q.mutex.Unlock()
 		return false
 	}
 
@@ -61,7 +61,6 @@ func (q *singleConnectionQueue) Offer(conn *queuePooledConnection) bool {
 
 	q.head = (q.head + 1) % q.size
 	q.data[q.head] = conn
-	q.mutex.Unlock()
 	return true
 }
 

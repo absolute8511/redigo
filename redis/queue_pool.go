@@ -23,10 +23,6 @@ import (
 	"github.com/absolute8511/redigo/internal"
 )
 
-const (
-	sleepBetweenRetry = time.Microsecond * 200
-)
-
 type QueuePool struct {
 
 	// Dial is an application supplied function for creating and configuring a
@@ -79,13 +75,6 @@ func (p *QueuePool) IsActive() bool {
 	return atomic.LoadInt32(&p.closed) == 0
 }
 
-func (p *QueuePool) GetUntil(timeout time.Duration, hint int) (Conn, error) {
-	if timeout == 0 {
-		timeout = time.Second
-	}
-	return p.getWithMaxRetry(timeout, hint, int64(timeout/sleepBetweenRetry))
-}
-
 // Get will only retry 3 times to avoid too much cpu cost
 func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
 	return p.getWithMaxRetry(timeout, hint, 3)
@@ -116,11 +105,12 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 	}()
 
 	wc := atomic.LoadInt64(&p.waitingCnt)
-	if wc > int64(atomic.LoadInt32(&p.MaxActive)*10) {
+	maxActive := atomic.LoadInt32(&p.MaxActive)
+	if wc > int64(maxActive*10) {
 		return nil, ErrPoolExhausted
 	}
 	firstWait := false
-	if p.Count() > 0 && (wc > int64(atomic.LoadInt32(&p.MaxActive))) {
+	if p.Count() >= int(maxActive-1) && (wc > 0) {
 		// since others is waiting, we need wait next retry
 		firstWait = true
 		err = ErrPoolExhausted
@@ -145,9 +135,6 @@ CL:
 				to = time.NewTimer(realTo)
 			}
 			atomic.AddInt64(&p.waitingCnt, 1)
-			// since the conn may be grabbed by others in high concurrency, so avoid retry too quickly,
-			// give the scheduler time to breath; affects latency minimally, but throughput drastically
-			time.Sleep(sleepBetweenRetry)
 			timeouted := false
 			select {
 			case <-to.C:
