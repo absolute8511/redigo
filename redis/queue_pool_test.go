@@ -449,6 +449,93 @@ func TestWaitQPoolDialError(t *testing.T) {
 	d.check("done", p, errCount+1, 0)
 }
 
+func TestWaitQPoolShouldNotStarve(t *testing.T) {
+	d := qpoolDialer{t: t}
+	p := redis.NewQueuePool(d.dial, 1, 1)
+	defer p.Close()
+
+	d.check("before close", p, 0, 0)
+	conn, err := p.Get(time.Second, 0)
+	if err != nil {
+		t.Errorf("failed: %v", err)
+		return
+	}
+	conn.Close()
+	time.Sleep(time.Second)
+
+	errCnt := int32(0)
+	errPoolExhaustedCnt := int32(0)
+	successCnt := int32(0)
+	done := make(chan struct{}, 1)
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			goSuccessCnt := 0
+			goErrCnt := 0
+			for {
+				select {
+				case <-done:
+					t.Logf("g %v success: %v, err: %v", index, goSuccessCnt, goErrCnt)
+					return
+				default:
+				}
+				t.Logf("g %v begin get: %s", index, time.Now())
+				conn, err := p.Get(time.Second/10, index)
+				if err != nil {
+					t.Logf("g %v get err: %s", index, time.Now())
+					goErrCnt++
+					if err == redis.ErrPoolExhausted {
+						atomic.AddInt32(&errPoolExhaustedCnt, 1)
+					}
+					if atomic.AddInt32(&errCnt, 1) > 3 {
+						break
+					}
+				} else {
+					t.Logf("g %v done get conn: %s", index, time.Now())
+					conn.Close()
+					t.Logf("g %v release conn: %s", index, time.Now())
+					atomic.AddInt32(&successCnt, 1)
+					goSuccessCnt++
+					time.Sleep(time.Microsecond * 1000)
+					if atomic.LoadInt32(&errCnt) > 3 {
+						t.Logf("g %v quit since has err: %s", index, time.Now())
+						break
+					}
+				}
+			}
+			t.Logf("g %v success: %v, err: %v", index, goSuccessCnt, goErrCnt)
+		}(i)
+	}
+	// Wait for goroutines to block.
+	time.Sleep(time.Second / 10)
+
+	start := time.Now()
+	for {
+		if time.Since(start) > time.Second*5 {
+			break
+		}
+		time.Sleep(time.Second / 4)
+	}
+	close(done)
+	wg.Wait()
+
+	t.Logf("stats: %v, %v, %v, pool: %v, %v", successCnt, errCnt, errPoolExhaustedCnt, p.Count(), p.WaitingCount())
+	if p.Count() <= 0 {
+		t.Errorf("should have pooled connections")
+	}
+	if successCnt <= 0 {
+		t.Errorf("should have success get connections")
+	}
+	if errPoolExhaustedCnt > 3 {
+		t.Errorf("should have no exhausted error")
+	}
+	if errCnt > 3 {
+		t.Errorf("should have no error")
+	}
+	d.check("done", p, 1, 1)
+}
 func TestWaitQPoolDialTimeoutToomuchShouldNotHangWaiting(t *testing.T) {
 	// test pool dail too long, and many client waiting on get connection since max active
 	// and the dail failed should notify waiting client to retry recreate
@@ -504,7 +591,7 @@ func TestWaitQPoolDialTimeoutToomuchShouldNotHangWaiting(t *testing.T) {
 	}
 	t.Logf("stats: %v, %v, %v, pool: %v, %v", atomic.LoadInt32(&successCnt), atomic.LoadInt32(&errCnt),
 		atomic.LoadInt32(&errPoolExhaustedCnt), p.Count(), p.WaitingCount())
-	if successCnt > 0 {
+	if atomic.LoadInt32(&successCnt) > 0 {
 		t.Errorf("should not success dial")
 	}
 	// make dial become normal
