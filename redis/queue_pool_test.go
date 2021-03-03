@@ -449,6 +449,69 @@ func TestWaitQPoolDialError(t *testing.T) {
 	d.check("done", p, errCount+1, 0)
 }
 
+func TestWaitQPoolShouldFailfastToomuchWaiting(t *testing.T) {
+	d := qpoolDialer{t: t}
+	p := redis.NewQueuePool(d.dial, 1, 1)
+	defer p.Close()
+	d.check("before close", p, 0, 0)
+	conn, err := p.Get(time.Second, 0)
+	if err != nil {
+		t.Errorf("failed: %v", err)
+		return
+	}
+	conn.Close()
+
+	conn, err = p.Get(time.Second/10, 0)
+	if err != nil {
+		t.Errorf("failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	_, err = p.Get(time.Second/2, 0)
+	if err != redis.ErrPoolExhausted {
+		t.Errorf("pool should exhausted: %v", err)
+		return
+	}
+	wd := time.Since(start)
+	if wd < time.Second/2 {
+		t.Errorf("should wait exhausted enough: %s", wd)
+		return
+	}
+	var wg sync.WaitGroup
+	failFast := int32(0)
+	errCnt := int32(0)
+	for i := 0; i < 11; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			start := time.Now()
+			_, err := p.Get(time.Second/2, 0)
+			wd := time.Since(start)
+			if wd < time.Millisecond {
+				atomic.AddInt32(&failFast, 1)
+			} else if wd < time.Second/2 {
+				t.Errorf("should wait enough timeout: %s", wd)
+			}
+			if err != nil {
+				atomic.AddInt32(&errCnt, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	t.Logf("stats: %v, %v, %v, %v", failFast, errCnt, p.Count(), p.WaitingCount())
+	if failFast <= 0 {
+		t.Errorf("should have fail fast error: %v", failFast)
+	}
+	if failFast >= 3 {
+		t.Errorf("should not have  too much fail fast error: %v", failFast)
+	}
+	if errCnt < 10 {
+		t.Errorf("should have enough error: %v", errCnt)
+	}
+}
+
 func TestWaitQPoolShouldNotStarve(t *testing.T) {
 	d := qpoolDialer{t: t}
 	p := redis.NewQueuePool(d.dial, 1, 1)
@@ -489,7 +552,7 @@ func TestWaitQPoolShouldNotStarve(t *testing.T) {
 					if err == redis.ErrPoolExhausted {
 						atomic.AddInt32(&errPoolExhaustedCnt, 1)
 					}
-					if atomic.AddInt32(&errCnt, 1) > 3 {
+					if atomic.AddInt32(&errCnt, 1) > 1 {
 						break
 					}
 				} else {
@@ -498,8 +561,8 @@ func TestWaitQPoolShouldNotStarve(t *testing.T) {
 					t.Logf("g %v release conn: %s", index, time.Now())
 					atomic.AddInt32(&successCnt, 1)
 					goSuccessCnt++
-					time.Sleep(time.Microsecond * 1000)
-					if atomic.LoadInt32(&errCnt) > 3 {
+					time.Sleep(time.Microsecond * 10)
+					if atomic.LoadInt32(&errCnt) > 1 {
 						t.Logf("g %v quit since has err: %s", index, time.Now())
 						break
 					}
@@ -528,10 +591,10 @@ func TestWaitQPoolShouldNotStarve(t *testing.T) {
 	if successCnt <= 0 {
 		t.Errorf("should have success get connections")
 	}
-	if errPoolExhaustedCnt > 3 {
+	if errPoolExhaustedCnt > 1 {
 		t.Errorf("should have no exhausted error")
 	}
-	if errCnt > 3 {
+	if errCnt > 1 {
 		t.Errorf("should have no error")
 	}
 	d.check("done", p, 1, 1)

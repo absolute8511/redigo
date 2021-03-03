@@ -16,9 +16,7 @@ package redis
 
 import (
 	"bytes"
-	"container/list"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,55 +28,67 @@ type waitQueueItem struct {
 }
 
 type waitQueue struct {
-	mu    sync.Mutex
-	items *list.List
+	waitCnt  int32
+	initSize int
+	tokenCh  chan struct{}
 }
 
-func newWaitQueue() *waitQueue {
-	return &waitQueue{
-		items: list.New(),
+func newWaitQueue(init int) *waitQueue {
+	wq := &waitQueue{
+		tokenCh:  make(chan struct{}, init),
+		initSize: init,
+	}
+	for i := 0; i < init; i++ {
+		wq.tokenCh <- struct{}{}
+	}
+	return wq
+}
+
+func (wq *waitQueue) TryToken() bool {
+	select {
+	case <-wq.tokenCh:
+		return true
+	default:
+		return false
 	}
 }
 
-func (wq *waitQueue) LockForTry() {
-	wq.mu.Lock()
-}
-
-func (wq *waitQueue) ReleaseLock() {
-	wq.mu.Unlock()
-}
-
-func (wq *waitQueue) WaitCntNoLock() int {
-	return wq.items.Len()
-}
-
-func (wq *waitQueue) WaitCnt() int {
-	wq.mu.Lock()
-	defer wq.mu.Unlock()
-	return wq.items.Len()
-}
-
-// must call LockForTry first
-func (wq *waitQueue) AddAndWait(wc <-chan time.Time, item waitQueueItem) bool {
-	e := wq.items.PushBack(item)
-	wq.mu.Unlock()
+func (wq *waitQueue) WaitToken(wc <-chan time.Time) bool {
+	ncnt := atomic.AddInt32(&wq.waitCnt, 1)
+	defer atomic.AddInt32(&wq.waitCnt, -1)
+	if int(ncnt) > wq.initSize*10 {
+		return false
+	}
 	select {
 	case <-wc:
-		wq.mu.Lock()
-		wq.items.Remove(e)
 		return false
-	case <-item.done:
-		wq.mu.Lock()
+	case <-wq.tokenCh:
 		return true
 	}
 }
 
-func (wq *waitQueue) SignalNoLock() {
-	e := wq.items.Front()
-	if e != nil {
-		close(e.Value.(waitQueueItem).done)
-		wq.items.Remove(e)
+// refill period to avoid bug caused the token leak
+func (wq *waitQueue) refill() {
+	if len(wq.tokenCh) < 1 {
+		for {
+			select {
+			case wq.tokenCh <- struct{}{}:
+			default:
+				return
+			}
+		}
 	}
+}
+
+func (wq *waitQueue) ReturnToken() {
+	select {
+	case wq.tokenCh <- struct{}{}:
+	default:
+	}
+}
+
+func (wq *waitQueue) WaitCnt() int {
+	return int(atomic.LoadInt32(&wq.waitCnt))
 }
 
 type QueuePool struct {
@@ -124,7 +134,7 @@ func NewQueuePool(newFn func() (Conn, error), maxIdle int, maxActive int) *Queue
 		MaxIdle:   maxIdle,
 		MaxActive: int32(maxActive),
 		pool:      newConnectionQueue(maxActive),
-		wq:        newWaitQueue(),
+		wq:        newWaitQueue(maxActive),
 	}
 }
 
@@ -134,7 +144,7 @@ func (p *QueuePool) IsActive() bool {
 
 // Get will only retry 3 times to avoid too much cpu cost
 func (p *QueuePool) Get(timeout time.Duration, hint int) (Conn, error) {
-	return p.getWithMaxRetry(timeout, hint, 4)
+	return p.getWithMaxRetry(timeout, hint, 2)
 }
 
 // GetRetry retry get connection in retry count, avoid retry too much
@@ -152,54 +162,39 @@ func (p *QueuePool) getWithMaxRetry(timeout time.Duration, hint int, maxRetry in
 	if timeout == 0 {
 		realTo = time.Second
 	}
-	deadline := time.Now().Add(realTo)
 	retry := 0
-	var to *time.Timer
+	ok := p.wq.TryToken()
+	if !ok {
+		to := time.NewTimer(realTo)
+		ok = p.wq.WaitToken(to.C)
+		to.Stop()
+		if !ok {
+			return nil, ErrPoolExhausted
+		}
+	}
 	defer func() {
-		if to != nil {
-			to.Stop()
+		if err != nil {
+			p.wq.ReturnToken()
 		}
 	}()
-
-	p.wq.LockForTry()
-	defer p.wq.ReleaseLock()
-	wc := p.wq.WaitCntNoLock()
-	maxActive := atomic.LoadInt32(&p.MaxActive)
-	if wc > int(maxActive*10) {
-		return nil, ErrPoolExhausted
-	}
-	needWaitFirst := false
-	if wc > 0 && p.Count() > 0 {
-		needWaitFirst = true
-		err = ErrPoolExhausted
-	}
+	deadline := time.Now().Add(realTo)
 
 CL:
 	retry++
-	if !needWaitFirst {
-		// try to acquire a connection; if the connection pool is empty, retry until
-		// timeout occures. If no timeout is set, will retry indefinitely.
-		// TODO: use pid for hint to reduce contention
-		conn, err = p.getConnectionWithHint(hint)
-	}
-	needWaitFirst = false
+	// try to acquire a connection; if the connection pool is empty, retry until
+	// timeout occures. If no timeout is set, will retry indefinitely.
+	// TODO: use pid for hint to reduce contention
+	conn, err = p.getConnectionWithHint(hint)
 	if err != nil {
 		if err == ErrPoolExhausted && p.IsActive() && time.Now().Before(deadline) {
 			if int64(retry) >= maxRetry {
 				// avoid too much retry while pool exhausted (it will cost too much cpu)
 				return nil, err
 			}
-			if to == nil {
-				to = time.NewTimer(realTo)
-			}
-			wi := waitQueueItem{done: make(chan struct{})}
-			// note, it may happen while remove the last in waiting queue and signal, then another locked before this wake up
-			// then this will fail again.
-			ok := p.wq.AddAndWait(to.C, wi)
-			if !ok {
-				//log.Printf("%v pool get retry timeout: %s\n", hint, time.Now())
-				return nil, err
-			}
+			// should not come here if token no refill
+			// it may rarely happen when token is refilled, so we
+			// just retry later
+			time.Sleep(time.Microsecond * 100)
 			goto CL
 		} else {
 			return nil, err
@@ -214,7 +209,6 @@ CL:
 // This method does not include logic to retry in case the connection pool is empty
 func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 	// try to get a valid connection from the connection pool
-	var err error
 	var conn *queuePooledConnection
 	for t := p.pool.Poll(hint); t != nil; t = p.pool.Poll(hint) {
 		conn = t
@@ -240,13 +234,11 @@ func (p *QueuePool) getConnectionWithHint(hint int) (Conn, error) {
 			return nil, ErrPoolExhausted
 		}
 
-		var c Conn
-		p.wq.ReleaseLock()
-		c, err = p.Dial()
-		p.wq.LockForTry()
+		c, err := p.Dial()
+		// since return err will cause the token be returned, so we can
+		// no need handle reset token here
 		if err != nil {
 			atomic.AddInt32(&p.connCnt, -1)
-			p.wq.SignalNoLock()
 			return nil, err
 		}
 		conn = &queuePooledConnection{c: c, p: p, hint: hint}
@@ -268,14 +260,12 @@ func (p *QueuePool) putConnectionWithHint(conn Conn, hint int) {
 		return
 	}
 	pc.Refresh()
-	p.wq.LockForTry()
-	defer p.wq.ReleaseLock()
 	if !p.IsActive() || !p.pool.Offer(pc, hint) {
 		// if closed, we will notify waiting client to retry create a new connection to pool
 		pc.realClose()
 	} else {
 		// if returned to pool, we notify waiting to retry get from pool
-		p.wq.SignalNoLock()
+		p.wq.ReturnToken()
 	}
 }
 
@@ -309,8 +299,6 @@ func (p *QueuePool) Close() error {
 }
 
 func (p *QueuePool) closeConnections() {
-	p.wq.LockForTry()
-	defer p.wq.ReleaseLock()
 	for conn := p.pool.Poll(0); conn != nil; conn = p.pool.Poll(0) {
 		conn.realClose()
 	}
@@ -318,6 +306,9 @@ func (p *QueuePool) closeConnections() {
 
 // refresh will drop idle connections and left the max idle (the left idle connection will ping for active)
 func (p *QueuePool) Refresh() {
+	if p.Count() == 0 {
+		p.wq.refill()
+	}
 	//log.Printf("refreshing at : %v", time.Now())
 	p.pool.DropIdle(p.MaxIdle)
 }
@@ -325,9 +316,7 @@ func (p *QueuePool) Refresh() {
 func (p *QueuePool) put(c Conn, forceClose bool, hint int) error {
 	if forceClose || c.Err() != nil || !p.IsActive() {
 		pc := c.(*queuePooledConnection)
-		p.wq.LockForTry()
 		pc.realClose()
-		p.wq.ReleaseLock()
 		return nil
 	}
 	p.PutConnection(c, hint)
@@ -366,7 +355,7 @@ func (pc *queuePooledConnection) realClose() error {
 	}
 	pc.c = errorConnection{errConnClosed}
 	atomic.AddInt32(&pc.p.connCnt, -1)
-	pc.p.wq.SignalNoLock()
+	pc.p.wq.ReturnToken()
 	return c.Close()
 }
 
